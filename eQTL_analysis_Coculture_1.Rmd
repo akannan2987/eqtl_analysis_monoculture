@@ -1,0 +1,414 @@
+---
+title: "eQTL Analysis for Coculture"
+output: html_document
+---
+
+<style type="text/css">
+
+body{ /* Normal  */
+      font-size: 14px;
+  }
+td {  /* Table  */
+  font-size: 8px;
+}
+h1.title {
+  font-size: 38px;
+  color: DarkRed;
+}
+h1 { /* Header 1 */
+  font-size: 28px;
+  color: DarkBlue;
+}
+h2 { /* Header 2 */
+    font-size: 22px;
+  color: DarkBlue;
+}
+h3 { /* Header 3 */
+  font-size: 20px;
+  font-family: "Times New Roman", Times, serif;
+  color: DarkBlue;
+}
+
+h4 { /* Header 4 */
+  font-size: 18px;
+  font-family: "Times New Roman", Times, serif;
+  color: DarkBlue;
+}
+
+h5 { /* Header 4 */
+  font-size: 16px;
+  font-family: "Times New Roman", Times, serif;
+  color: DarkBlue;
+}
+
+
+code.r{ /* Code block */
+    font-size: 12px;
+}
+pre { /* Code block - determines code spacing between lines */
+    font-size: 14px;
+}
+</style>
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "/Users/Abhi/")
+```
+
+# eQTL analysis Script (Walkthrough)
+
+## Step1: ### Load the required Libraries to perform eQTL analysis
+
+One first needs to install the following packages before loading the libraries. 
+Packages can be installed using install.packages("**library name**")
+
+```{r Load Libraries, echo=TRUE, results='hide', message=F, warning=F}
+
+#Load required libraries for eQTL analysis
+
+library(readr)
+library(tidyr)
+library(dplyr)
+library("devtools")
+#install_github("kassambara/factoextra")
+library("factoextra")
+library(MASS)
+library(ggplot2)
+library(factoextra)
+library(MatrixEQTL)
+suppressMessages(library(MatrixEQTL))
+library(dplyr)
+
+```
+
+
+## Step2: Filter SNPs (genotypes) based on Minor Allele Frequecy (MAF) score and obtain covariates of SNP data by calculating Principal components from the PCA analysis.  
+
+Before starting the analysis, we removed 4 out of 96 isolates based on the Genotype Similarity and Dissimilarity scores between the SNP derived from the Transcriptomic and Genomic data. So we have SNP infomation from 92 isolates for both Cocultures and Cocultures. SNP data contains the isolates IDs as the row names and SNP genotype information as column names. It is Huge matrix of 92 rows and 282232 columns
+
+### Read genotype file and save it in the 'gt' dataframe
+
+```{r Read genotype file and save it in dt dataframe, echo=TRUE, results='hide', message=F, warning=F}
+gt = read.table("Desktop/Abhilash/study/Post-Doc/Lab_notebook/eQTL/Input_3/Differential_regulation_files/eQTL_input/MATRIX_eQTL/whole_genome/input/snps_Allchr.txt", sep="\t",
+                header=TRUE, row.names = 1)
+gt <- as.data.frame(as.matrix(t(gt)))
+head(gt) # Display first few lines of Genotype data
+dim(gt) # Count the number of rows and columns of Genotype data
+```
+
+### Calculate Minor Allele Frequencies (MAF) of the genotypes and draw MAF histogram
+
+```{r Calculate MAF and draw MAF histogram, echo=T, results='hide', message=F, warning=F}
+maf <- colMeans(gt)/2
+maf
+maf <- pmin(maf, 1-maf)
+maf
+sum(maf > 0.5)
+```
+
+
+### Plot the Histogram of MAF values
+
+```{r Plot the Histogram of MAF values, echo=T, results='show', message=F, warning=F}
+truehist(maf, main = "Histogram of MAF values.", col = "steelblue")
+lines(density(maf), lty = 2, col = "darkorange", lwd = 3)
+
+```
+
+### Read only those genotypes with MAF >=0.05 
+
+```{r Read the SNP with MAF-5pc data, echo=T, results='hide', message=F, warning=F}
+
+#Read the SNP (MAF>=0.05) data
+snp_values = read.table("Desktop/Abhilash/study/Post-Doc/Lab_notebook/eQTL/Input_3/Differential_regulation_files/eQTL_input/MATRIX_eQTL/whole_genome/input/snps_Allchr_TR_maf0.05.txt", sep="\t",
+                        header=TRUE, row.names = 1)
+
+```
+
+
+### Determine the Covariates of SNP data by performing Prinicipal component analysis. 
+
+PCs derived from this PCA can be used to adjust for the population startification effects 
+
+```{r Obtain the Covarties by PCA of the Genotypes, echo=T, results='show', message=F, warning=F}
+
+#Obtain the Covarties by PCA of the Genotypes
+
+pca_snps = prcomp(t(snp_values), center=TRUE, scale = F)
+plot(pca_snps$x[,c(1,2)],pch=16) # plot the PCA of the SNP data
+head(pca_snps$x[,c(1,2)])
+plot(pca_snps)
+fviz_eig(pca_snps, addlabels = TRUE)
+
+#pca_snps$sdev
+#summary(pca_snps)
+```
+
+### Write the First 10 PCs of the SNP data
+
+
+
+```{r Write the First 10 PCs, echo=T, results='hide', message=F, warning=F}
+
+# write.csv(pca_snps$x[,1:10],"Desktop/Abhilash/study/Post-Doc/Lab_notebook/eQTL/Input_3/Differential_regulation_files/eQTL_input/MATRIX_eQTL/input/pca_snps.csv")
+```
+
+I have commented out the above code, as i have already written this data. 
+
+
+## Step3: Running MatrixEQTL packages: Start of eQTL mapping
+
+### eQTL mapping, cis/trans, with covariate info from PC
+
+#### We begin by reading the Genotypes with MAF >= 0.05 into a data frame
+
+```{r Read the SNPs into a dataframe, echo=T, results='hide', message=F, warning=F}
+
+#Read the SNP Genotypes
+SNP_file_name <-  "Desktop/Abhilash/study/Post-Doc/Lab_notebook/eQTL/Input_3/Differential_regulation_files/eQTL_input/MATRIX_eQTL/whole_genome/input/snps_Allchr_TR_maf0.05.txt"
+
+```
+
+#### Store the location of the SNPs in a dtaframe. 
+
+This dataframe contains the location information of a SNP in the genome
+
+```{r Read the SNP location data, echo=T, results='hide', message=F, warning=F}
+#Read the SNP location data (Where the SNP are located in the Genome)
+snps_location_file_name <- "Desktop/Abhilash/study/Post-Doc/Lab_notebook/eQTL/Input_3/Differential_regulation_files/eQTL_input/MATRIX_eQTL/whole_genome/input/snploc_AllChr_maf0.05.txt"
+```
+
+#### Store the Batch-corrected normalized Gene Expression data in a dataframe
+
+```{r Read the gene expression data, echo=T, results='hide', message=F, warning=F}
+#Read the Batch-corrected normalized Gene Expression data
+expression_file_name_TR <- "Desktop/Abhilash/study/Post-Doc/Lab_notebook/eQTL/Input_3/Differential_regulation_files/eQTL_input/MATRIX_eQTL/whole_genome/input/chrAll_TR_sum_GE.txt"
+```
+
+#### Store the Gene location data in a dataframe 
+
+This dataframe contains location information of the genes in the genome
+
+```{r Read the Gene location data, echo=T, results='hide', message=F, warning=F}
+#Read the Gene location data (Where the Genes are located in the Genome)
+gene_location_file_name <- "Desktop/Abhilash/study/Post-Doc/Lab_notebook/eQTL/Input_3/Differential_regulation_files/eQTL_input/MATRIX_eQTL/whole_genome/input/chrAll_FP_sum_loc.txt"
+```
+
+
+#### Store the covariate data in a dataframe 
+
+covariate data contains the first 10 PC's of the SNP genotypes that will be used to correct population stratification effects
+
+```{r Read the covariate data, echo=T, results='hide', message=F, warning=F}
+#Read the Covariate data represented by first 10 PCs from the above step
+covariates_file_name <- "Desktop/Abhilash/study/Post-Doc/Lab_notebook/eQTL/Input_3/Differential_regulation_files/eQTL_input/MATRIX_eQTL/whole_genome/input/pca_snps_10.txt"
+```
+
+#### Setting the p-value thresholds for Cis and Trans eQTLs 
+
+Setting the above threshold will identify statistically signinfaction associations from linear regression
+
+```{r Setting the p-value thresholds, echo=T, results='hide', message=F, warning=F}
+cis_threshold <- 1e-5 # P-value threshold for Cis-eQTL identification
+trans_threshold <- 1e-5 # P-value threshold for Trans-eQTL identification 
+cis_dist <- 1e4 # Threshold for Cis distance (+/- 10kb from the TSS)
+```
+
+#### Specifying output file names to store the results of the eQTL analysis
+
+```{r Specifying output file names, echo=T, results='hide', message=F, warning=F}
+# Output file name
+#output_file_name_cis = tempfile();
+#output_file_name_tra = tempfile();
+
+output_file_name_cis = "Desktop/Abhilash/study/Post-Doc/Lab_notebook/eQTL/Input_3/Differential_regulation_files/eQTL_input/MATRIX_eQTL/whole_genome/output/ten_kb/MAF_0.05/TR/cis/output_TR_AllChr_cis_eqtls_PCA10kb_maf0.05.txt"
+output_file_name_tra = "Desktop/Abhilash/study/Post-Doc/Lab_notebook/eQTL/Input_3/Differential_regulation_files/eQTL_input/MATRIX_eQTL/whole_genome/output/ten_kb/MAF_0.05/TR/trans/output_TR_AllChr_trans_eqtls_PCA10kb_maf0.05.txt"
+```
+
+#### Specifying other general settings for MatrixEQTL
+
+```{r general settings, echo=T, results='hide', message=F, warning=F}
+#Settings
+# Linear model to use, modelANOVA, modelLINEAR, or modelLINEAR_CROSS
+useModel = modelLINEAR; # modelANOVA, modelLINEAR, or modelLINEAR_CROSS
+
+# Only associations significant at this level will be saved
+pvOutputThreshold_cis = cis_threshold;
+pvOutputThreshold_tra = trans_threshold;
+
+# Set to character() for no covariates
+# covariates_file_name = character();
+
+# Error covariance matrix
+# Set to numeric() for identity.
+errorCovariance = numeric();
+
+# Distance for local gene-SNP pairs
+cisDist = cis_dist
+
+## Load genotype data
+snps = SlicedData$new();
+snps$fileDelimiter = "\t"; # the TAB character
+snps$fileOmitCharacters = "NA"; # denote missing values;
+snps$fileSkipRows = 1; # one row of column labels
+snps$fileSkipColumns = 1; # one column of row labels
+snps$fileSliceSize = 2000; # read file in slices of 2,000 rows
+snps$LoadFile(SNP_file_name);
+
+
+## Load gene expression data
+gene = SlicedData$new();
+gene$fileDelimiter = "\t"; # the TAB character
+gene$fileOmitCharacters = "NA"; # denote missing values;
+gene$fileSkipRows = 1; # one row of column labels
+gene$fileSkipColumns = 1; # one column of row labels
+gene$fileSliceSize = 2000; # read file in slices of 2,000 rows
+gene$LoadFile(expression_file_name_TR);
+
+## Load covariates
+cvrt = SlicedData$new();
+cvrt$fileDelimiter = "\t"; # the TAB character
+cvrt$fileOmitCharacters = "NA"; # denote missing values;
+cvrt$fileSkipRows = 1; # one row of column labels
+cvrt$fileSkipColumns = 1; # one column of row labels
+if(length(covariates_file_name)>0) {
+  cvrt$LoadFile(covariates_file_name);
+}
+```
+
+#### Run MatrixEQTL
+
+```{r Run the MatrixEQTL package , echo=T, results='hide', message=F, warning=F}
+# Run the analysis
+snpspos = read.table(snps_location_file_name, header = TRUE, stringsAsFactors = FALSE);
+genepos = read.table(gene_location_file_name, header = TRUE, stringsAsFactors = FALSE);
+
+me_TR = Matrix_eQTL_main(
+  snps = snps,
+  gene = gene,
+  cvrt = cvrt,
+  output_file_name = output_file_name_tra,
+  pvOutputThreshold = pvOutputThreshold_tra,
+  useModel = useModel,
+  errorCovariance = errorCovariance,
+  verbose = FALSE,
+  output_file_name.cis = output_file_name_cis,
+  pvOutputThreshold.cis = pvOutputThreshold_cis,
+  snpspos = snpspos,
+  genepos = genepos,
+  cisDist = cisDist,
+  pvalue.hist = TRUE,
+  min.pv.by.genesnp = FALSE,
+  noFDRsaveMemory = FALSE);
+
+me_TR_qq = Matrix_eQTL_main(
+  snps = snps,
+  gene = gene,
+  cvrt = cvrt,
+  output_file_name = output_file_name_tra,
+  pvOutputThreshold = pvOutputThreshold_tra,
+  useModel = useModel,
+  errorCovariance = errorCovariance,
+  verbose = FALSE,
+  output_file_name.cis = output_file_name_cis,
+  pvOutputThreshold.cis = pvOutputThreshold_cis,
+  snpspos = snpspos,
+  genepos = genepos,
+  cisDist = cisDist,
+  pvalue.hist = "qqplot",
+  min.pv.by.genesnp = FALSE,
+  noFDRsaveMemory = FALSE)
+
+#unlink(output_file_name_tra);
+#unlink(output_file_name_cis);
+```
+
+We can check the time taken to finish this analysis
+```{r time taken , echo=T, results='show', message=F, warning=F}
+cat('Analysis done in: ', me_TR$time.in.sec, ' seconds', '\n');
+
+```
+
+
+#### Display first few lines of the result (Cis and Trans-eQTLs ) and generate Q-Q plot
+
+```{r summary of eQTL results , echo=T, results='show', message=F, warning=F}
+head(me_TR$cis$eqtls)
+head(me_TR$trans$eqtls)
+
+## Make the histogram of local and distant p-values
+plot(me_TR)
+
+## Make the qq-plot of local and distant p-values
+plot(me_TR_qq)    
+```
+
+
+## Step 4: Extract the top cis-eQTLs from the Coculture data
+
+We once again need to the SNp and Gene expression data into a new dataframe. It is important to transpose both these dataframes and finally extract the top cis-eQTLs from the analysis.
+
+```{r top cis-eQTLs from the Coculture data , echo=T, results='hide', message=F, warning=F}
+
+#Reading the SNP data to a new variable 'snp_values'
+snp_values = read.table(SNP_file_name, row.names=1, header=TRUE)
+snp_values = data.frame(snps = rownames(snp_values), snp_values, stringsAsFactors = FALSE)
+snp_values=snp_values[,-c(1)]
+
+# We also create a dataframe with expression data
+gene_values = read.table(expression_file_name_TR, row.names=1, header=TRUE)
+gene_values = data.frame(gene = rownames(gene_values), gene_values, stringsAsFactors = FALSE)
+gene_values=gene_values[,-c(1)]
+#View(gene_values)
+
+#create transposed dataframe
+gene_values_transpose <- as.data.frame(as.matrix(t(gene_values)))
+snp_values_transpose <- as.data.frame(as.matrix(t(snp_values)))
+```
+
+```{r Extract top cis-eQTLs from the Coculture data , echo=T, results='show', message=F, warning=F}
+#Extract the top cis-eQTLs from the Coculture data
+
+cis_eqtl_TR_res = me_TR$cis$eqtls
+cis_eqtl_TR_res = cis_eqtl_TR_res[cis_eqtl_TR_res$FDR < 0.05,]
+top_cis_eqtls_TR = cis_eqtl_TR_res[order(cis_eqtl_TR_res$pvalue),]
+top_cis_eqtls_TR = top_cis_eqtls_TR[!duplicated(top_cis_eqtls_TR$gene),]
+mafs = apply(as.matrix(snp_values[-1]),1,mean)/2
+mafs = pmin(mafs, 1 - mafs)
+mafs = data.frame(snps=names(mafs), maf = mafs)
+top_cis_eqtls_TR = merge(top_cis_eqtls_TR, mafs, by="snps")
+top_cis_eqtls_TR = top_cis_eqtls_TR[order(top_cis_eqtls_TR$FDR),]
+head(top_cis_eqtls_TR)
+dim(top_cis_eqtls_TR)
+write.table(top_cis_eqtls_TR, "Desktop/Abhilash/study/Post-Doc/Lab_notebook/eQTL/Input_3/Differential_regulation_files/eQTL_input/MATRIX_eQTL/whole_genome/output/ten_kb/MAF_0.05/TR/cis/top_cis_eQTL_TR_10kb_maf0.05.txt", sep = "\t")
+
+```
+
+## Step 5: Extract the top trans-eQTLs from the Coculture data
+
+Before running this run cis eQTL analysis for FP (Coculture)
+
+```{r Extract top trans-eQTLs from the Coculture data , echo=T, results='show', message=F, warning=F}
+
+#Before running this run cis eQTL analysis for FP (Coculture)
+
+trans_eqtl_TR_res = me_TR$trans$eqtls
+trans_eqtl_TR_res = trans_eqtl_TR_res[trans_eqtl_TR_res$FDR < 0.05,]
+top_trans_eqtls_TR = trans_eqtl_TR_res[order(trans_eqtl_TR_res$pvalue),]
+top_trans_eqtls_TR = top_trans_eqtls_TR[!duplicated(top_trans_eqtls_TR$gene),]
+mafs = apply(as.matrix(snp_values[-1]),1,mean)/2
+mafs = pmin(mafs, 1 - mafs)
+mafs = data.frame(snps=names(mafs), maf = mafs)
+top_trans_eqtls_TR = merge(top_trans_eqtls_TR, mafs, by="snps")
+top_trans_eqtls_TR = top_trans_eqtls_TR[order(top_trans_eqtls_TR$FDR),]
+head(top_trans_eqtls_TR)
+dim(top_trans_eqtls_TR)
+
+write.table(top_trans_eqtls_TR, "Desktop/Abhilash/study/Post-Doc/Lab_notebook/eQTL/Input_3/Differential_regulation_files/eQTL_input/MATRIX_eQTL/whole_genome/output/ten_kb/MAF_0.05/TR/trans/top_trans_eQTL_TR_10kb_maf0.05.txt", sep = "\t")
+
+```
+
+
+
+
